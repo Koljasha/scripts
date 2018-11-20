@@ -1,5 +1,5 @@
-import requests, csv, os
 from bs4 import BeautifulSoup
+import requests, csv, os
 
 # Парсинг https://galaxystore.ru/
 

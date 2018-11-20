@@ -40,8 +40,22 @@ class Samsung:
                     model = els[i].find_element_by_css_selector('.product-card__prd-info-title-wrap span').text
                     model_id, id = els[i].get_attribute('data-omni').split('|')
                     color = els[i].find_elements_by_css_selector('ul.s-slick .product-card__img-ctrl-item span')[j].get_attribute('innerHTML')
+
                     if color == 'blue':
                         color = 'синий'
+                    elif color == 'dukeblue':
+                        color = 'синий'
+                    elif color == 'black':
+                        color = 'черный'
+                    elif color == 'BLACK':
+                        color = 'черный'
+                    elif color == 'silver':
+                        color = 'серебристый'
+                    elif color == 'gold':
+                        color = 'золотой'
+                    elif color == 'white':
+                        color = 'белый'
+
                     line = '{};{};{};{}\n'.format(model, model_id, id, color)
                     print(line)
                     file.write(line)
