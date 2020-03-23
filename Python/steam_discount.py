@@ -31,12 +31,15 @@ def discount(url, params):
         link = game.parent.get('href').split('?')[0]
         try:
             discount = game.select('.search_discount > span')[0].text.strip()
-        except:
+        except Exception:
             continue
+        price = game.select('.search_price')[0].text.strip().split('.')
         sale.append({
-            'title':title,
+            'title': title,
             'link': link,
-            'discount': discount
+            'discount': discount,
+            'full_price': price[0],
+            'discount_price': price[1]
         })
 
     return sale
@@ -76,8 +79,8 @@ def steam():
 
 def write_csv(data):
     with open('steam.csv', 'a', newline='', encoding="utf-8") as file:
-        fieldnames = ['title', 'link', 'discount']
-        writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter ='|')
+        fieldnames = ['title', 'link', 'discount', 'full_price', 'discount_price']
+        writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter='|')
 
         for line in data:
             writer.writerow(line)
@@ -89,11 +92,10 @@ def main():
 
     with open('steam.csv', 'a', newline='', encoding="utf-8") as file:
         writer = csv.writer(file, delimiter='|')
-        writer.writerow(['Title', 'Link', 'Discount'])
+        writer.writerow(['Title', 'Link', 'Discount', 'Full price', 'Discount price'])
 
     steam()
 
 
 if __name__ == '__main__':
     main()
-
