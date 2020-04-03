@@ -1,7 +1,7 @@
 # парсинг игр Steam со скидками
 # requirements.txt: beautifulsoup4, lxml, requests
 
-import requests, os, csv
+import requests, os, csv, webbrowser, argparse
 from bs4 import BeautifulSoup
 
 
@@ -78,24 +78,61 @@ def steam():
 
 
 def write_csv(data):
-    with open('steam.csv', 'a', newline='', encoding="utf-8") as file:
+    with open('steam.csv', 'a', newline='', encoding='utf-8') as file:
         fieldnames = ['title', 'link', 'discount', 'full_price', 'discount_price']
         writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter='|')
 
         for line in data:
             writer.writerow(line)
 
+def read_csv(browser=False):
+    try:
+        with open('steam.csv', 'r', newline='', encoding='utf-8') as file:
+            reader = csv.DictReader(file, delimiter='|')
+            for row in reader:
+                if row['Discount'] == '-100%':
+                    if browser:
+                        webbrowser.open_new_tab(row['Link'])
+                    else:
+                        print(row['Title'], '\t|\t', row['Link'])
+    except Exception as e:
+        print(f'Exception: {e}')
+        return
+
 
 def main():
-    if os.path.exists('steam.csv'):
-        os.remove('steam.csv')
+    parser = argparse.ArgumentParser(description='Parse Steam Store for discount', formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('-p', '--parse', action='store_true', help='Parse Steam Store and write steam.csv')
+    parser.add_argument('-s', '--show', default=0, type=int, choices=range(3), help='0 - Not show anything;\n1 - Show games with 100 discount in script;\n2 - Show games with 100 discount in browser from steam.csv')
+    args = parser.parse_args()
 
-    with open('steam.csv', 'a', newline='', encoding="utf-8") as file:
-        writer = csv.writer(file, delimiter='|')
-        writer.writerow(['Title', 'Link', 'Discount', 'Full price', 'Discount price'])
+    if args.parse is False and args.show ==  0:
+        parser.print_help()
+        return
 
-    steam()
+    if args.parse is True:
+        if os.path.exists('steam.csv'):
+            os.remove('steam.csv')
 
+        with open('steam.csv', 'a', newline='', encoding="utf-8") as file:
+            writer = csv.writer(file, delimiter='|')
+            writer.writerow(['Title', 'Link', 'Discount', 'Full price', 'Discount price'])
+
+        steam()
+
+        print('---------------')
+        if args.show == 2:
+            read_csv(True)
+        elif args.show == 1:
+            read_csv(False)
+        print('---------------')
+
+    else:
+        if args.show == 2:
+            read_csv(True)
+        elif args.show == 1:
+            read_csv(False)
 
 if __name__ == '__main__':
     main()
+
