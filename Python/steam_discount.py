@@ -74,7 +74,7 @@ def steam():
             return
 
         write_csv(discounts)
-        print(f'Page: {page}')
+        print(f'Page: {page} / {pag}')
 
 
 def write_csv(data):
