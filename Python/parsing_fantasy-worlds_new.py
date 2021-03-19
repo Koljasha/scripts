@@ -1,5 +1,10 @@
+#!/usr/bin/env python
+
+#
 # парсинг новинок сайта http://fantasy-worlds.org/lib/ с записью в csv
-# requirements.txt: beautifulsoup4, lxml, requests
+#
+# pip install requests beautifulsoup4 lxml
+#
 
 import requests, csv
 from bs4 import BeautifulSoup

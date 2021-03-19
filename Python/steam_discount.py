@@ -1,5 +1,10 @@
+#!/usr/bin/env python
+
+#
 # парсинг игр Steam со скидками
-# requirements.txt: beautifulsoup4, lxml, requests
+#
+# pip install requests beautifulsoup4 lxml
+#
 
 import requests, os, csv, webbrowser, argparse
 from bs4 import BeautifulSoup
