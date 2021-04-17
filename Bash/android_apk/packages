@@ -15,7 +15,7 @@ pixlr com.pixlr.express
 
 mailru_mail ru.mail.mailapp
 mailru_cloud ru.mail.cloud
-yandex ru.yandex.searchplugin
+yandex_app ru.yandex.searchplugin
 yandex_browser com.yandex.browser
 
 telegram org.telegram.messenger
