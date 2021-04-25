@@ -32,7 +32,8 @@ cardsmobile ru.cardsmobile.mw3
 tinkoff_bank com.idamob.tinkoff.android
 tinkoff_invest ru.tinkoff.investing
 tinkoff_mob ru.tinkoff.mvno
-sberbank ru.sberbankmobile
+sber_bank ru.sberbankmobile
+sber_invest ru.sber.investor
 yoomoney ru.yoo.money
 
 mts ru.mts.mymts

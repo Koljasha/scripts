@@ -57,7 +57,7 @@ for line in `cat $file`; do
         echo "Need install: $install"
 
         # uncomment for install
-        # adb install-multiple -r $install
+        adb install-multiple -r $install
     else
         echo "Ok"
     fi

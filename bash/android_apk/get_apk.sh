@@ -5,7 +5,7 @@
 
 # manually connect to device:
 # sudo adb start-server
-# adb connect 192.168.1.149
+# adb connect 192.168.1.127
 # adb devices
 
 # file with apk names
