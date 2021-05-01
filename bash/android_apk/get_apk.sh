@@ -8,6 +8,8 @@
 # adb connect 192.168.1.127
 # adb devices
 
+sudo adb start-server
+
 # file with apk names
 file="./packages"
 # folder for downloaded apk
@@ -42,4 +44,6 @@ done
 
 # manually disconnect to device:
 # adb kill-server
+
+adb kill-server
 
