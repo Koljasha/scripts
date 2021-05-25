@@ -3,22 +3,20 @@ sdmaid eu.thedarken.sdm
 vnc com.realvnc.viewer.android
 openvpn net.openvpn.openvpn
 termux com.termux
-yandex_key ru.yandex.key
 
 coolreader org.coolreader
 vlc org.videolan.vlc
 office com.microsoft.office.officehubrow
 
-lightroom com.adobe.lrmobile
-snapseed com.niksoftware.snapseed
-pixlr com.pixlr.express
-
 gismeteo ru.gismeteo.gismeteo
 
 mailru_mail ru.mail.mailapp
 mailru_cloud ru.mail.cloud
+
 yandex_app ru.yandex.searchplugin
 yandex_browser com.yandex.browser
+yandex_key ru.yandex.key
+yandex_go ru.yandex.taxi
 
 telegram org.telegram.messenger
 whatsapp com.whatsapp
@@ -39,6 +37,8 @@ tinkoff_mob ru.tinkoff.mvno
 
 sber_bank ru.sberbankmobile
 sber_invest ru.sber.investor
+
+vtb_bank ru.vtb24.mobilebanking.android
 
 mts ru.mts.mymts
 tele2 ru.tele2.mytele2
