@@ -22,8 +22,8 @@ cmp() {
     ver_download=`echo $2`
 
     while [[ $ver_phone != $temp_phone ]]; do
-        temp_phone=`echo $ver_phone | cut -d. -f1`
-        temp_download=`echo $ver_download | cut -d. -f1`
+        temp_phone=`echo $ver_phone | cut -d. -f1 | sed -E 's/^0+([0-9]+)/\1/g'`
+        temp_download=`echo $ver_download | cut -d. -f1 | sed -E 's/^0+([0-9]+)/\1/g'`
         if (( $temp_phone > $temp_download )); then
             # echo ">>> $temp_phone > $temp_download"
             return 0
@@ -31,8 +31,8 @@ cmp() {
             # echo "<<< $temp_phone < $temp_download"
             return 1
         fi
-        ver_phone=`echo $ver_phone | cut -d. -f2-`
-        ver_download=`echo $ver_download | cut -d. -f2-`
+        ver_phone=`echo $ver_phone | cut -d. -f2- | sed -E 's/^0+([0-9]+)/\1/g'`
+        ver_download=`echo $ver_download | cut -d. -f2- | sed -E 's/^0+([0-9]+)/\1/g'`
     done
     return 0
 }
@@ -45,10 +45,10 @@ for line in `cat $file`; do
     echo "$name"
 
     # ver: 3.46.0_h -> 3.46.0; 2.30.7-rc5 -> 2.30.7
-    version_device=`adb shell dumpsys package $id | grep versionName | cut -d= -f2 | cut -d- -f1 | cut -d_ -f1`
+    version_device=`adb shell dumpsys package $id | grep versionName | cut -d= -f2 | cut -d- -f1 | cut -d_ -f1 | tr + . `
     echo "device : $version_device"
 
-    version_download=`ls $folder/$name* | cut -d: -f3 | sed -n 1p`
+    version_download=`ls $folder/$name* | cut -d: -f3 | sed -n 1p | tr + . `
     echo "download : $version_download"
 
     # cmp version_phone version_download
