@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 #
-# парсинг Портала (ссылки изменены)
+# парсинг Портала (пример), используя сессию
 #
 # pip install requests beautifulsoup4 lxml
 #
@@ -23,7 +23,7 @@ def parce_portal(start, stop):
             print("Error! Code {} != 200".format(res.status_code))
         soup = BeautifulSoup(res.text, 'lxml')
         try:
-            product = soup.find(id='SPFieldText').text.strip()
+            product = soup.find(id='SimpleFieldText').text.strip()
         except AttributeError:
             product = "Ошибка - Нет Продукта"
         data[i] = product
