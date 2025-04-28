@@ -1,0 +1,11 @@
+services:
+  timer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: timer-image
+    container_name: timer-container
+    volumes:
+      - .:/app
+    restart: unless-stopped
+
