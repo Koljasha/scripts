@@ -1,5 +1,5 @@
-# Используем Ubuntu как базовый образ
-FROM ubuntu:latest
+# Используем Debian как базовый образ
+FROM debian:stable-slim
 
 # Устанавливаем необходимые пакеты
 RUN apt-get update && \
