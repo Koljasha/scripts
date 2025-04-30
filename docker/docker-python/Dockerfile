@@ -16,8 +16,9 @@ COPY cronfile /etc/cron.d/cronfile
 # RUN chmod 0644 /etc/cron.d/cronfile
 
 # Устанавливаем переменные окружения
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+PYTHONUNBUFFERED=1 \
+PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
