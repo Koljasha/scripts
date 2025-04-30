@@ -3,7 +3,8 @@ services:
     build: .
     image: timer-image
     container_name: timer-container
+    restart: unless-stopped
+    command: "cron -f"
     volumes:
       - ./logs:/app/logs
-    restart: unless-stopped
 

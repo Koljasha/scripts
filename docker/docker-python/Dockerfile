@@ -17,8 +17,7 @@ COPY cronfile /etc/cron.d/cronfile
 
 # Устанавливаем переменные окружения
 ENV PYTHONDONTWRITEBYTECODE=1 \
-PYTHONUNBUFFERED=1 \
-PIP_DISABLE_PIP_VERSION_CHECK=1
+PYTHONUNBUFFERED=1
 
 # Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
@@ -27,5 +26,5 @@ WORKDIR /app
 COPY main.py .
 
 # Запускаем cron в режиме foreground, чтобы контейнер не завершался
-CMD ["cron", "-f"]
+# CMD ["cron", "-f"]
 
