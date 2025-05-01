@@ -26,5 +26,5 @@ WORKDIR /app
 COPY main.py .
 
 # Запускаем cron в режиме foreground, чтобы контейнер не завершался
-# CMD ["cron", "-f"]
+CMD ["cron", "-f"]
 

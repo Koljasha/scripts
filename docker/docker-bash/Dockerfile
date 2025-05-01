@@ -22,5 +22,5 @@ WORKDIR /app
 COPY script.sh .
 
 # Запускаем cron в режиме foreground, чтобы контейнер не завершался
-# CMD ["cron", "-f"]
+CMD ["cron", "-f"]
 
