@@ -1,4 +1,4 @@
-### Тестовый пример Docker
+### Тестовый пример Docker: Django
 
 * запуск: `docker compose up -d`
 * пересборка: `docker compose up -d --build`
