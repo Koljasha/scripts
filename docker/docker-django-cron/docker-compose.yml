@@ -1,0 +1,14 @@
+services:
+  django-app:
+    build: .
+    image: django-image
+    container_name: django-container
+    restart: always
+    command: "gunicorn root.wsgi:application --bind='0.0.0.0:8000'"
+    env_file:
+      - .env
+    ports:
+      - 8000:8000
+    volumes:
+      - ./app:/app
+
