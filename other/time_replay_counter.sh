@@ -2,12 +2,14 @@
 
 # ==============================================================================
 # Генератор временных меток с поддержкой дробных шагов и стартов.
+# Режимы: --step или --count (взаимоисключающие)
 # Вывод: всегда в формате MM:SS.ss (два знака после точки, даже если .00).
 #
 # Примеры:
 #   ./time_replay_counter.sh --time=2          --step=0.5
 #   ./time_replay_counter.sh --time=1:30.5     --step=10.25 --start=5.75
-#   ./time_replay_counter.sh -t 5 -p 1.33 -s 0
+#   ./time_replay_counter.sh --time=1:00       --count=12
+#   ./time_replay_counter.sh -t 1:30 -c 10 -s 5
 #
 # Требования:
 #   - GNU getopt (из util-linux)
@@ -25,7 +27,7 @@ if ! command -v bc >/dev/null; then
 fi
 
 # Парсим аргументы
-PARSED=$(getopt -o t:p:s: -l time:,step:,start: -n "$0" -- "$@")
+PARSED=$(getopt -o t:p:s:c: -l time:,step:,start:,count: -n "$0" -- "$@")
 if [[ $? -ne 0 ]]; then
     echo "ОШИБКА: сбой при разборе аргументов." >&2
     exit 2
@@ -35,25 +37,35 @@ eval set -- "$PARSED"
 time_arg=""
 step_arg=""
 start_arg=""
+count_arg=""
 
 while true; do
     case $1 in
         -t|--time)   time_arg="$2";   shift 2 ;;
         -p|--step)   step_arg="$2";   shift 2 ;;
         -s|--start)  start_arg="$2";  shift 2 ;;
+        -c|--count)  count_arg="$2";  shift 2 ;;
         --) shift; break ;;
         *) echo "ВНУТРЕННЯЯ ОШИБКА"; exit 3 ;;
     esac
 done
 
+# Проверка взаимоисключающих параметров
+if [[ -n "$step_arg" && -n "$count_arg" ]]; then
+    echo "ОШИБКА: параметры --step и --count не могут быть указаны одновременно." >&2
+    exit 3
+fi
+
 # Проверка обязательных параметров
-if [[ -z "$time_arg" || -z "$step_arg" ]]; then
+if [[ -z "$time_arg" ]] || [[ -z "$step_arg" && -z "$count_arg" ]]; then
     cat >&2 <<EOF
-ОШИБКА: обязательные параметры --time (-t) и --step (-p) не заданы.
+ОШИБКА: необходимо указать --time (-t) и один из --step (-p) или --count (-c).
 
 Использование:
   $0 --time=<время> --step=<шаг> [--start=<старт>]
+  $0 --time=<время> --count=<число> [--start=<старт>]
   $0 -t <время> -p <шаг> [-s <старт>]
+  $0 -t <время> -c <число> [-s <старт>]
 
 Форматы времени:
   - Минуты:          "5"        → 5 минут
@@ -63,13 +75,10 @@ if [[ -z "$time_arg" || -z "$step_arg" ]]; then
 Примеры:
   $0 -t 2 -p 0.5
   $0 --time=1:45.5 --step=10.25 --start=5.75
+  $0 -t 1:00 -c 12
+  $0 -t 1:30 -c 10 -s 5
 EOF
     exit 3
-fi
-
-# Устанавливаем start = step, если не задан
-if [[ -z "$start_arg" ]]; then
-    start_arg="$step_arg"
 fi
 
 # ==============================================================================
@@ -115,28 +124,89 @@ centiseconds_to_mmss() {
     printf "%02d:%02d.%02d" "$minutes" "$seconds" "$frac_part"
 }
 
-# Проверка: неотрицательное число (для step/start)
+# Проверка: неотрицательное число (для step/start/count)
 is_nonnegative_number() {
     [[ "$1" =~ ^[0-9]*\.?[0-9]+$ ]] || [[ "$1" =~ ^[0-9]+$ ]]
 }
 
+# Проверка: целое положительное число (для count)
+is_positive_integer() {
+    [[ "$1" =~ ^[0-9]+$ ]] && [[ "$1" -ge 2 ]]
+}
+
 # ==============================================================================
-# ПРЕОБРАЗОВАНИЕ ВХОДНЫХ ДАННЫХ В ЦЕЛЫЕ СОТЫЕ ДОЛИ СЕКУНД
+# ПРЕОБРАЗОВАНИЕ ВХОДНЫХ ДАННЫХ
 # ==============================================================================
 
-# Проверяем корректность step и start как чисел
-if ! is_nonnegative_number "$step_arg" || ! is_nonnegative_number "$start_arg"; then
-    echo "ОШИБКА: шаг (--step/-p) и старт (--start/-s) должны быть неотрицательными числами." >&2
-    exit 3
+# Конвертируем время в сотые доли секунды
+total_cs_str=$(parse_time_to_centiseconds "$time_arg")
+total_cs="${total_cs_str%.*}"
+
+# Проверяем count, если задан
+if [[ -n "$count_arg" ]]; then
+    if ! is_positive_integer "$count_arg"; then
+        echo "ОШИБКА: --count должен быть целым числом >= 2." >&2
+        exit 3
+    fi
+    count=$((count_arg))
 fi
 
-# Конвертируем всё в целые сотые доли секунды (гарантированно целые строки)
-total_cs_str=$(parse_time_to_centiseconds "$time_arg")
-step_cs_str=$(echo "scale=0; ($step_arg * 100 + 0.5)/1" | bc -l)
-start_cs_str=$(echo "scale=0; ($start_arg * 100 + 0.5)/1" | bc -l)
+# ==============================================================================
+# ВЫЧИСЛЕНИЕ STEP и START (если count задан)
+# ==============================================================================
+
+if [[ -n "$count_arg" ]]; then
+    # Режим count: вычисляем step
+    if [[ -z "$start_arg" ]]; then
+        # start не задан: start = step (по умолчанию)
+        # step = time / count
+        step_cs_str=$(echo "scale=0; $total_cs / $count" | bc -l)
+        start_cs_str="$step_cs_str"
+    else
+        # start задан явно
+        if ! is_nonnegative_number "$start_arg"; then
+            echo "ОШИБКА: старт (--start/-s) должен быть неотрицательным числом." >&2
+            exit 3
+        fi
+        # Конвертируем start в сотые
+        start_cs_str=$(echo "scale=0; ($start_arg * 100 + 0.5)/1" | bc -l)
+        start_cs="${start_cs_str%.*}"
+
+        if [[ -z "$start_cs" ]] || ! [[ "$start_cs" =~ ^[0-9]+$ ]]; then
+            echo "ОШИБКА: не удалось преобразовать start в число." >&2
+            exit 3
+        fi
+
+        # Проверяем, что start < time
+        if (( start_cs >= total_cs )); then
+            echo "ОШИБКА: старт должен быть меньше общего времени." >&2
+            exit 3
+        fi
+
+        # step = (time - start) / (count - 1)
+        step_cs_str=$(echo "scale=0; ($total_cs - $start_cs) / ($count - 1)" | bc -l)
+    fi
+else
+    # Режим step: step задан явно
+    if ! is_nonnegative_number "$step_arg"; then
+        echo "ОШИБКА: шаг (--step/-p) должен быть неотрицательным числом." >&2
+        exit 3
+    fi
+    step_cs_str=$(echo "scale=0; ($step_arg * 100 + 0.5)/1" | bc -l)
+
+    # Обработка start
+    if [[ -z "$start_arg" ]]; then
+        start_cs_str="$step_cs_str"
+    else
+        if ! is_nonnegative_number "$start_arg"; then
+            echo "ОШИБКА: старт (--start/-s) должен быть неотрицательным числом." >&2
+            exit 3
+        fi
+        start_cs_str=$(echo "scale=0; ($start_arg * 100 + 0.5)/1" | bc -l)
+    fi
+fi
 
 # Убираем возможную дробную часть (защита от 12200.0)
-total_cs="${total_cs_str%.*}"
 step_cs="${step_cs_str%.*}"
 start_cs="${start_cs_str%.*}"
 
@@ -160,6 +230,16 @@ fi
 if (( start_cs > total_cs )); then
     echo "ОШИБКА: начальная точка выходит за пределы заданного времени." >&2
     exit 3
+fi
+
+# Дополнительная проверка для count режима: вычисленные точки не выходят за time
+if [[ -n "$count_arg" ]]; then
+    last_point=$((start_cs + step_cs * (count - 1)))
+    # Из-за округлений возможна небольшая погрешность, проверяем с допуском 1 сотую
+    if (( last_point > total_cs + 1 )); then
+        echo "ОШИБКА: вычисленный шаг приводит к выходу за пределы времени." >&2
+        exit 3
+    fi
 fi
 
 # ==============================================================================
@@ -200,10 +280,15 @@ unset IFS
 
 # Вывод сводки параметров
 printf "=====================\n"
-printf "Время: %s  Шаг: %s  Старт: %s\n" \
-    "$(centiseconds_to_mmss "$total_cs")" \
-    "$(centiseconds_to_mmss "$step_cs")" \
-    "$(centiseconds_to_mmss "$start_cs")"
+printf "Время: %s  " "$(centiseconds_to_mmss "$total_cs")"
+
+if [[ -n "$count_arg" ]]; then
+    printf "Кол-во: %s  Шаг: %s  " "$count_arg" "$(centiseconds_to_mmss "$step_cs")"
+else
+    printf "Шаг: %s  " "$(centiseconds_to_mmss "$step_cs")"
+fi
+
+printf "Старт: %s\n" "$(centiseconds_to_mmss "$start_cs")"
 printf "=====================\n"
 
 # Вывод
@@ -213,5 +298,4 @@ for pt in "${sorted_points[@]}"; do
     printf "| %s | %s |\n" "$mmss" "$label"
 done
 printf "=====================\n"
-
 
