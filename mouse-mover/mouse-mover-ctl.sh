@@ -30,8 +30,7 @@ is_reloading() {
 show_logs() {
   echo ""
   echo -e "  ${CLR_DIM}── Последние $LOG_LINES строк лога ──${CLR_RESET}"
-  systemctl --user -n "$LOG_LINES" --no-pager status "$SERVICE_NAME" 2>/dev/null \
-    | tail -n "$LOG_LINES" \
+  journalctl --user -u "$SERVICE_NAME" -n "$LOG_LINES" --no-pager 2>/dev/null \
     | sed 's/^/    /'
   echo ""
 }
@@ -49,8 +48,11 @@ show_status() {
     reloading)
       echo -e "  ${CLR_YELLOW}↻ Сервис ==$SERVICE_TITLE== ПЕРЕЗАПУСКАЕТСЯ...${CLR_RESET}"
       ;;
-    inactive|failed)
+    inactive)
       echo -e "  ${CLR_RED}○ Сервис ==$SERVICE_TITLE== ОСТАНОВЛЕН${CLR_RESET}"
+      ;;
+    failed)
+      echo -e "  ${CLR_RED}✖ Сервис ==$SERVICE_TITLE== ОШИБКА${CLR_RESET}"
       ;;
     *)
       echo -e "  ${CLR_DIM}? Сервис ==$SERVICE_TITLE== СТАТУС: $state${CLR_RESET}"
@@ -68,13 +70,6 @@ show_menu() {
   else
     echo "  [1] Запустить  │  [0] Остановить  │  [Enter] Выйти"
   fi
-  echo ""
-}
-
-# ── Ожидание нажатия ───────────────────────────────
-wait_key() {
-  echo -en "  ${CLR_DIM}[Нажмите любую клавишу]${CLR_RESET} "
-  read -n 1 -r
   echo ""
 }
 
@@ -104,10 +99,7 @@ case "$choice" in
       systemctl --user start "$SERVICE_NAME"
     fi
     sleep 1
-    clear
     show_status
-    show_logs
-    wait_key
     ;;
 
   0)
@@ -115,20 +107,16 @@ case "$choice" in
       echo -e "  ${CLR_RED}Останавливаем...${CLR_RESET}"
       systemctl --user stop "$SERVICE_NAME"
       sleep 1
-      clear
       show_status
-      show_logs
     else
-      clear
-      show_status
       echo -e "  ${CLR_DIM}Сервис уже остановлен${CLR_RESET}"
     fi
-    wait_key
     ;;
 
   *)
     echo -e "  ${CLR_DIM}Выход без изменений${CLR_RESET}"
-    echo ""
     ;;
 esac
+
+echo ""
 
