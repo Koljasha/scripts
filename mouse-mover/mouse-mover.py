@@ -3,11 +3,6 @@
 #
 # Шевелитель мышки
 #
-# pip install pyautogui
-#
-# sudo pacman -S tk
-# sudo apt-get install python3-tk python3-dev
-#
 
 import pyautogui
 import time
