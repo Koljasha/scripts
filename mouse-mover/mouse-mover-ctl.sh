@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+SERVICE_TITLE="Mouse Mover"
 SERVICE_NAME="mouse-mover.service"
 
 # ── Проверка статуса ───────────────────────────────
@@ -11,10 +12,10 @@ is_active() {
 show_status() {
   if is_active; then
   echo -e "
-  [1;32mСервис ЗАПУЩЕН[0m"
+  [1;32mСервис ==$SERVICE_TITLE== ЗАПУЩЕН[0m"
   else
   echo -e "
-  [1;31mСервис ОСТАНОВЛЕН[0m"
+  [1;31mСервис ==$SERVICE_TITLE== ОСТАНОВЛЕН[0m"
   fi
   echo ""
 }
