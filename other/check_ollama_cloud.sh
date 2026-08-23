@@ -3,6 +3,8 @@
 # Проверка всех моделей ollama-cloud в opencode.
 # Каждой модели отправляется тестовый запрос; в конце выводится таблица:
 # кто ответил, а кому нужен upgrade / более высокий тариф.
+# Ключевая фишка: после каждого запроса сессия сразу удаляется из базы,
+# чтобы не накапливалось мусора от тестов.
 
 set -euo pipefail
 
@@ -62,14 +64,28 @@ shorten() {
 }
 
 # ---------- 3. Проверка одной модели ----------
+#После каждого opencode run извлекает sessionID и сразу удаляет сессию из базы.
 check_model() {
     local model="$1" idx=$2
     local safe out rc=0 detail="" status
+    local session_id=""
 
     safe=$(printf '%s' "$model" | tr -c 'a-zA-Z0-9._-' '_')
     out="$WORKDIR/$safe.out"
 
+    # Запуск с сохранением вывода и извлечением sessionID
+    # Используем формат json, чтобы могли прочитать sessionID
     timeout "$TIMEOUT" opencode run -m "$model" --format json "$PROMPT" >"$out" 2>/dev/null || rc=$?
+
+    # Извлекаем sessionID из JSON-output (первое встречающееся значение)
+    if [[ -f "$out" && $rc -eq 0 ]]; then
+        session_id=$(jq -r 'select(.sessionID != null) | .sessionID // empty' "$out" 2>/dev/null | head -n1)
+    fi
+
+    # Удаляем созданную сессию из базы RIGHT AWAY, чтобы не накапливалось мусора.
+    if [[ -n "$session_id" ]] ; then
+        opencode session delete $session_id > /dev/null 2>&1
+    fi
 
     if (( rc == 0 )) && grep -q '"type":"text"' "$out"; then
         # Успех: склеиваем все текстовые части ответа
