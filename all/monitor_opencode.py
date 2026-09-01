@@ -14,8 +14,9 @@ https://opencode.ai/docs/ru/zen/
     TG_BOT_TOKEN=<токен бота от BotFather>
     TG_CHAT_ID=<id чата или канала, напр. -1001234567890>
 
-Пример cron (запуск каждые 4 часа):
-0 */4 * * * /usr/bin/python3 /opt/opencode-monitor/monitor_opencode.py >> /opt/opencode-monitor/cron.err 2>&1
+Пример cron (запуск каждые 4 часа); в cron.err попадает только stderr — ошибки
+и необработанные краши, обычный лог пишется скриптом в monitor_opencode.log:
+0 */4 * * * /usr/bin/python3 /opt/opencode-monitor/monitor_opencode.py 2>> /opt/opencode-monitor/cron.err
 """
 
 import json
@@ -91,6 +92,7 @@ def setup_logging():
     root.addHandler(fh)
     sh = logging.StreamHandler(sys.stderr)
     sh.setFormatter(fmt)
+    sh.setLevel(logging.ERROR)
     root.addHandler(sh)
 
 
