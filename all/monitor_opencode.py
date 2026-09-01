@@ -14,6 +14,10 @@ https://opencode.ai/docs/ru/zen/
     TG_BOT_TOKEN=<токен бота от BotFather>
     TG_CHAT_ID=<id чата или канала, напр. -1001234567890>
 
+Лог — один файл monitor_opencode.log. В конце каждого запуска проверяется число строк:
+если больше LOG_MAX_LINES (10000), старые строки удаляются, остаются последние
+LOG_KEEP_LINES (1000).
+
 Пример cron (запуск каждые 4 часа); в cron.err попадает только stderr — ошибки
 и необработанные краши, обычный лог пишется скриптом в monitor_opencode.log:
 0 */4 * * * /usr/bin/python3 /opt/opencode-monitor/monitor_opencode.py 2>> /opt/opencode-monitor/cron.err
@@ -26,7 +30,6 @@ import re
 import sys
 import time
 from datetime import datetime
-from logging.handlers import TimedRotatingFileHandler
 
 import requests
 from bs4 import BeautifulSoup
@@ -36,7 +39,8 @@ ENV_PATH = os.path.join(BASE_DIR, ".env")
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
 LOG_PATH = os.path.join(BASE_DIR, "monitor_opencode.log")
 
-LOG_RETENTION_DAYS = 30
+LOG_MAX_LINES = 10000
+LOG_KEEP_LINES = 1000
 HTTP_TIMEOUT = 30
 
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) opencode-price-monitor/1.0"
@@ -81,19 +85,29 @@ def setup_logging():
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    fh = TimedRotatingFileHandler(
-        LOG_PATH,
-        when="midnight",
-        interval=1,
-        backupCount=LOG_RETENTION_DAYS,
-        encoding="utf-8",
-    )
+    fh = logging.FileHandler(LOG_PATH, mode="a", encoding="utf-8")
     fh.setFormatter(fmt)
     root.addHandler(fh)
     sh = logging.StreamHandler(sys.stderr)
     sh.setFormatter(fmt)
     sh.setLevel(logging.ERROR)
     root.addHandler(sh)
+
+
+def trim_log():
+    if not os.path.exists(LOG_PATH):
+        return
+    try:
+        with open(LOG_PATH, encoding="utf-8") as fh:
+            lines = fh.readlines()
+        if len(lines) > LOG_MAX_LINES:
+            with open(LOG_PATH, "w", encoding="utf-8") as fh:
+                fh.writelines(lines[-LOG_KEEP_LINES:])
+            logger.info(
+                "Лог обрезан: было %d строк, осталось %d", len(lines), LOG_KEEP_LINES
+            )
+    except OSError as err:
+        logger.error("Не удалось обрезать лог: %s", err)
 
 
 def fetch_html(url, timeout):
@@ -419,8 +433,11 @@ def main():
 
 
 if __name__ == "__main__":
+    code = 0
     try:
-        sys.exit(main())
+        code = main()
     except Exception as err:
         logging.getLogger("opencode_monitor").exception("Фатальная ошибка: %s", err)
-        sys.exit(1)
+        code = 1
+    trim_log()
+    sys.exit(code)
