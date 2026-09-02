@@ -30,9 +30,10 @@ import re
 import sys
 import time
 from datetime import datetime
+from typing import NotRequired, TypedDict
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
@@ -64,10 +65,40 @@ FIELD_LABELS = {
     },
 }
 
+ModelTable = dict[str, dict[str, str]]
+TariffEvent = tuple[str, str, str]
+PriceChange = tuple[str, list[tuple[str, str, str]]]
+
+
+class SourceData(TypedDict):
+    models: ModelTable
+    deprecated: NotRequired[dict[str, str]]
+
+
+class SourceSnapshot(TypedDict):
+    fetched_at: str
+    models: ModelTable
+    deprecated: NotRequired[dict[str, str]]
+
+
+class SourceDiff(TypedDict):
+    removed: list[str]
+    added: list[str]
+    tariff: list[TariffEvent]
+    prices: list[PriceChange]
+    deprecated: list[tuple[str, str, str | None]]
+
+
 logger = logging.getLogger("opencode_monitor")
 
 
-def load_env():
+def load_env() -> dict[str, str]:
+    """Читает секреты Telegram из файла .env рядом со скриптом.
+
+    Returns:
+        Словарь конфигурации; значения пустые, если .env отсутствует
+        или переменная не задана.
+    """
     cfg = {"TG_BOT_TOKEN": "", "TG_CHAT_ID": ""}
     if not os.path.exists(ENV_PATH):
         return cfg
@@ -81,7 +112,12 @@ def load_env():
     return cfg
 
 
-def setup_logging():
+def setup_logging() -> None:
+    """Настраивает логгирование: INFO в файл, ERROR в stderr.
+
+    Обычные записи идут только в monitor_opencode.log; stderr (cron.err)
+    получает лишь ошибки и необработанные краши.
+    """
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
@@ -94,7 +130,11 @@ def setup_logging():
     root.addHandler(sh)
 
 
-def trim_log():
+def trim_log() -> None:
+    """Обрезает лог до последних LOG_KEEP_LINES строк, если строк больше LOG_MAX_LINES.
+
+    При размере ниже порога ничего не делает; факт обрезки логируется.
+    """
     if not os.path.exists(LOG_PATH):
         return
     try:
@@ -110,7 +150,19 @@ def trim_log():
         logger.error("Не удалось обрезать лог: %s", err)
 
 
-def fetch_html(url, timeout):
+def fetch_html(url: str, timeout: int) -> str:
+    """GET-запрос страницы с 3 попытками и экспоненциальной паузой.
+
+    Args:
+        url: адрес страницы.
+        timeout: таймаут запроса в секундах.
+
+    Returns:
+        HTML-разметка страницы в кодировке UTF-8.
+
+    Raises:
+        RuntimeError: если все попытки неудачны.
+    """
     last_err = None
     for attempt in range(3):
         try:
@@ -129,11 +181,21 @@ def fetch_html(url, timeout):
     raise RuntimeError(f"Не удалось получить {url}: {last_err}")
 
 
-def _normalize(value):
+def _normalize(value: str) -> str:
+    """Схлопывает подряд идущие пробелы и обрезает строку."""
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _find_table(soup, expected_headers):
+def _find_table(soup: BeautifulSoup, expected_headers: set[str]) -> Tag | None:
+    """Ищет первую таблицу, чей заголовок содержит все ожидаемые колонки.
+
+    Args:
+        soup: распарсенный HTML страницы.
+        expected_headers: подмножество имён колонок, идентифицирующих таблицу.
+
+    Returns:
+        Элемент таблицы или None, если таблица не найдена.
+    """
     for table in soup.find_all("table"):
         header_row = table.find("tr")
         if header_row is None:
@@ -147,7 +209,11 @@ def _find_table(soup, expected_headers):
     return None
 
 
-def _table_rows(table):
+def _table_rows(table: Tag) -> list[list[str]]:
+    """Возвращает строки данных таблицы (без заголовка) как списки ячеек.
+
+    Пропускаются пустые строки.
+    """
     rows = []
     for tr in table.find_all("tr")[1:]:
         cells = [
@@ -158,7 +224,8 @@ def _table_rows(table):
     return rows
 
 
-def _header_indexes(table):
+def _header_indexes(table: Tag) -> list[str]:
+    """Возвращает имена колонок таблицы (заголовок)."""
     header_row = table.find("tr")
     return [
         _normalize(c.get_text(" ", strip=True))
@@ -166,7 +233,15 @@ def _header_indexes(table):
     ]
 
 
-def parse_go(soup):
+def parse_go(soup: BeautifulSoup) -> ModelTable:
+    """Парсит таблицу лимитов запросов Go.
+
+    Returns:
+        Словарь {модель: {"за 5 часов": ..., "в неделю": ..., "в месяц": ...}}.
+
+    Raises:
+        RuntimeError: таблица не найдена или пуста (структура страницы изменилась).
+    """
     table = _find_table(soup, GO_HEADERS)
     if table is None:
         raise RuntimeError("Не найдена таблица запросов Go на странице")
@@ -196,7 +271,16 @@ def parse_go(soup):
     return models
 
 
-def parse_zen(soup):
+def parse_zen(soup: BeautifulSoup) -> tuple[ModelTable, dict[str, str]]:
+    """Парсит таблицу цен Zen и таблицу устаревания.
+
+    Returns:
+        Кортеж (модели, deprecated): модели — {модель: {вход, выход, cached_read,
+        cached_write}}, deprecated — {модель: дата устаревания}.
+
+    Raises:
+        RuntimeError: таблица цен не найдена или пуста.
+    """
     table = _find_table(soup, ZEN_HEADERS)
     if table is None:
         raise RuntimeError("Не найдена таблица цен Zen на странице")
@@ -234,7 +318,18 @@ def parse_zen(soup):
     return models, deprecated
 
 
-def diff_models(prev, curr):
+def diff_models(
+    prev: ModelTable, curr: ModelTable
+) -> tuple[list[str], list[str], list[TariffEvent], list[PriceChange]]:
+    """Сравнивает два снапшота моделей.
+
+    Пара «X Free» и «X» распознаётся как смена тарифа (одно событие), а не как
+    пропажа и появление. Дубли имён (варианты лимитов токенов, например
+    «Claude Sonnet 4.5 (≤ 200K tokens)» и «(> 200K tokens)») — отдельные модели.
+
+    Returns:
+        Кортеж (пропали, появились, смены тарифа, изменения цен).
+    """
     prev_keys, curr_keys = set(prev), set(curr)
     removed = prev_keys - curr_keys
     added = curr_keys - prev_keys
@@ -269,7 +364,16 @@ def diff_models(prev, curr):
     return sorted(removed), sorted(added), tariff, price_changes
 
 
-def build_message(changes, now_str):
+def build_message(changes: dict[str, SourceDiff], now_str: str) -> str:
+    """Собирает текст уведомления для Telegram.
+
+    Args:
+        changes: обнаруженные изменения по источникам Go/Zen.
+        now_str: дата и время в человекочитаемом формате.
+
+    Returns:
+        Текст сообщения, обрезанный до 4000 символов (лимит Telegram).
+    """
     out = [f"📡 OpenCode-монитор — изменения ({now_str})", ""]
 
     removed = [f"{s}: {n}" for s in ("Go", "Zen") for n in changes[s]["removed"]]
@@ -289,7 +393,8 @@ def build_message(changes, now_str):
         tail = f"{new_date}" if old_date is None else f"{new_date} (было: {old_date})"
         dep_events.append(f"Zen: {name} — дата устаревания {tail}")
 
-    def add(title, items):
+    def add(title: str, items: list[str]) -> None:
+        """Добавляет секцию с заголовком и строками, если строки есть."""
         if items:
             out.append(title)
             out.extend(f"  {x}" for x in items)
@@ -309,7 +414,12 @@ def build_message(changes, now_str):
     return text
 
 
-def send_tg(cfg, text):
+def send_tg(cfg: dict[str, str], text: str) -> None:
+    """Отправляет текст в Telegram через sendMessage.
+
+    Если токен или chat_id не заданы, отправка пропускается с предупреждением.
+    Ошибки сети логируются, но не роняют скрипт.
+    """
     token = cfg.get("TG_BOT_TOKEN", "").strip()
     chat = cfg.get("TG_CHAT_ID", "").strip()
     if not token or not chat:
@@ -326,7 +436,13 @@ def send_tg(cfg, text):
         logger.error("TG: не удалось отправить уведомление: %s", err)
 
 
-def load_state():
+def load_state() -> dict[str, SourceSnapshot] | None:
+    """Читает снапшот из state.json.
+
+    Returns:
+        Словарь состояния или None, если файл отсутствует либо повреждён
+        (в этом случае будет повторная инициализация).
+    """
     if not os.path.exists(STATE_PATH):
         return None
     try:
@@ -337,16 +453,24 @@ def load_state():
         return None
 
 
-def save_state(state):
+def save_state(state: dict[str, SourceSnapshot]) -> None:
+    """Записывает снапшот состояния в state.json."""
     with open(STATE_PATH, "w", encoding="utf-8") as fh:
         json.dump(state, fh, ensure_ascii=False, indent=2)
 
 
-def main():
+def main() -> int:
+    """Основной цикл: загрузка страниц, сравнение со снапшотом, лог и TG.
+
+    При первом запуске (нет state.json) сохраняет снапшот без уведомлений.
+
+    Returns:
+        Код выхода: 0 — успех; 1 — фатальная ошибка (отрабатывается в __main__).
+    """
     cfg = load_env()
     setup_logging()
 
-    fresh = {}
+    fresh: dict[str, SourceData] = {}
     for source, url in PAGES.items():
         html = fetch_html(url, HTTP_TIMEOUT)
         soup = BeautifulSoup(html, "html.parser")
@@ -356,11 +480,15 @@ def main():
             models, deprecated = parse_zen(soup)
             fresh["Zen"] = {"models": models, "deprecated": deprecated}
 
-    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    now = datetime.now().astimezone()
+    now_iso = now.isoformat(timespec="seconds")
+    now_human = now.strftime("%Y-%m-%d %H:%M:%S")
     prev = load_state()
 
     if prev is None:
-        state = {s: {"fetched_at": now, **data} for s, data in fresh.items()}
+        state: dict[str, SourceSnapshot] = {
+            s: {"fetched_at": now_iso, **data} for s, data in fresh.items()
+        }
         save_state(state)
         for s, data in fresh.items():
             logger.info(
@@ -372,7 +500,7 @@ def main():
         logger.info("Первый запуск: снапшот сохранён в state.json, изменений нет")
         return 0
 
-    changes = {}
+    changes: dict[str, SourceDiff] = {}
     total = 0
     for s in ("Go", "Zen"):
         old = prev.get(s, {}).get("models", {})
@@ -382,6 +510,7 @@ def main():
             "added": added,
             "tariff": tariff,
             "prices": prices,
+            "deprecated": [],
         }
         total += len(removed) + len(added) + len(tariff) + len(prices)
         for n in removed:
@@ -420,7 +549,7 @@ def main():
     changes["Zen"]["deprecated"] = dep_events
     total += len(dep_events)
 
-    state = {s: {"fetched_at": now, **fresh[s]} for s in fresh}
+    state = {s: {"fetched_at": now_iso, **fresh[s]} for s in fresh}
     save_state(state)
 
     if total == 0:
@@ -428,7 +557,7 @@ def main():
         return 0
 
     logger.info("Найдено изменений: %d", total)
-    send_tg(cfg, build_message(changes, now))
+    send_tg(cfg, build_message(changes, now_human))
     return 0
 
 
