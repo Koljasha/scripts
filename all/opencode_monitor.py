@@ -14,13 +14,13 @@ https://opencode.ai/docs/ru/zen/
     TG_BOT_TOKEN=<токен бота от BotFather>
     TG_CHAT_ID=<id чата или канала, напр. -1001234567890>
 
-Лог — один файл monitor_opencode.log. В конце каждого запуска проверяется число строк:
+Лог — один файл opencode_monitor.log. В конце каждого запуска проверяется число строк:
 если больше LOG_MAX_LINES (10000), старые строки удаляются, остаются последние
 LOG_KEEP_LINES (1000).
 
 Пример cron (запуск каждые 4 часа); в cron.err попадает только stderr — ошибки
-и необработанные краши, обычный лог пишется скриптом в monitor_opencode.log:
-0 */4 * * * /usr/bin/python3 /opt/opencode-monitor/monitor_opencode.py 2>> /opt/opencode-monitor/cron.err
+и необработанные краши, обычный лог пишется скриптом в opencode_monitor.log:
+0 */4 * * * /usr/bin/python3 /opt/opencode-monitor/opencode_monitor.py 2>> /opt/opencode-monitor/cron.err
 """
 
 import json
@@ -38,7 +38,7 @@ from bs4 import BeautifulSoup, Tag
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
 STATE_PATH = os.path.join(BASE_DIR, "state.json")
-LOG_PATH = os.path.join(BASE_DIR, "monitor_opencode.log")
+LOG_PATH = os.path.join(BASE_DIR, "opencode_monitor.log")
 
 LOG_MAX_LINES = 10000
 LOG_KEEP_LINES = 1000
@@ -115,7 +115,7 @@ def load_env() -> dict[str, str]:
 def setup_logging() -> None:
     """Настраивает логгирование: INFO в файл, ERROR в stderr.
 
-    Обычные записи идут только в monitor_opencode.log; stderr (cron.err)
+    Обычные записи идут только в opencode_monitor.log; stderr (cron.err)
     получает лишь ошибки и необработанные краши.
     """
     root = logging.getLogger()
