@@ -2,8 +2,8 @@
 """Мониторинг таблиц OpenCode Go (лимиты запросов) и Zen (цены за 1M токенов, устаревание).
 
 Скрипт периодически (cron) проверяет:
-https://opencode.ai/docs/ru/go/
-https://opencode.ai/docs/ru/zen/
+https://opencode.ai/docs/go/
+https://opencode.ai/docs/zen/
 хранит снапшот в state.json и при изменениях
 (появление/пропажа моделей, смена Free → платная, изменение цен, устаревание)
 шлёт уведомление в Telegram.
@@ -47,13 +47,13 @@ HTTP_TIMEOUT = 30
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) opencode-price-monitor/1.0"
 
 PAGES = {
-    "Go": "https://opencode.ai/docs/ru/go/",
-    "Zen": "https://opencode.ai/docs/ru/zen/",
+    "Go": "https://opencode.ai/docs/go/",
+    "Zen": "https://opencode.ai/docs/zen/",
 }
 
-GO_HEADERS = {"Model", "запросов за 5 часов"}
-ZEN_HEADERS = {"Модель", "Cached Read"}
-DEPRECATED_HEADERS = {"Модель", "Дата устаревания"}
+GO_HEADERS = {"Model", "requests per 5 hour"}
+ZEN_HEADERS = {"Model", "Cached Read"}
+DEPRECATED_HEADERS = {"Model", "Deprecation date"}
 
 FIELD_LABELS = {
     "Go": {"за 5 часов": "за 5 часов", "в неделю": "в неделю", "в месяц": "в месяц"},
@@ -250,9 +250,9 @@ def parse_go(soup: BeautifulSoup) -> ModelTable:
         name: headers.index(name)
         for name in (
             "Model",
-            "запросов за 5 часов",
-            "запросов в неделю",
-            "запросов в месяц",
+            "requests per 5 hour",
+            "requests per week",
+            "requests per month",
         )
     }
     models = {}
@@ -260,9 +260,9 @@ def parse_go(soup: BeautifulSoup) -> ModelTable:
         if len(cells) <= max(idx.values()):
             continue
         models[cells[idx["Model"]]] = {
-            "за 5 часов": cells[idx["запросов за 5 часов"]],
-            "в неделю": cells[idx["запросов в неделю"]],
-            "в месяц": cells[idx["запросов в месяц"]],
+            "за 5 часов": cells[idx["requests per 5 hour"]],
+            "в неделю": cells[idx["requests per week"]],
+            "в месяц": cells[idx["requests per month"]],
         }
     if not models:
         raise RuntimeError(
@@ -287,15 +287,15 @@ def parse_zen(soup: BeautifulSoup) -> tuple[ModelTable, dict[str, str]]:
     headers = _header_indexes(table)
     idx = {
         name: headers.index(name)
-        for name in ("Модель", "Вход", "Выход", "Cached Read", "Cached Write")
+        for name in ("Model", "Input", "Output", "Cached Read", "Cached Write")
     }
     models = {}
     for cells in _table_rows(table):
         if len(cells) <= max(idx.values()):
             continue
-        models[cells[idx["Модель"]]] = {
-            "вход": cells[idx["Вход"]],
-            "выход": cells[idx["Выход"]],
+        models[cells[idx["Model"]]] = {
+            "вход": cells[idx["Input"]],
+            "выход": cells[idx["Output"]],
             "cached_read": cells[idx["Cached Read"]],
             "cached_write": cells[idx["Cached Write"]],
         }
@@ -310,11 +310,11 @@ def parse_zen(soup: BeautifulSoup) -> tuple[ModelTable, dict[str, str]]:
         logger.warning("Zen: таблица устаревания не найдена — страница изменилась?")
     else:
         dheaders = _header_indexes(dtable)
-        didx = {name: dheaders.index(name) for name in ("Модель", "Дата устаревания")}
+        didx = {name: dheaders.index(name) for name in ("Model", "Deprecation date")}
         for cells in _table_rows(dtable):
             if len(cells) <= max(didx.values()):
                 continue
-            deprecated[cells[didx["Модель"]]] = cells[didx["Дата устаревания"]]
+            deprecated[cells[didx["Model"]]] = cells[didx["Deprecation date"]]
     return models, deprecated
 
 
