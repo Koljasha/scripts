@@ -5,8 +5,8 @@
 # кто ответил, а кому нужен upgrade / более высокий тариф.
 #
 # Использование:
-#   ./check_ollama_cloud.sh              # все модели ollama-cloud
-#   ./check_ollama_cloud.sh glm-5.2     # только модели с подстрокой в имени
+#   ./ollama_cloud_free.sh              # все модели ollama-cloud
+#   ./ollama_cloud_free.sh glm-5.2      # только модели с подстрокой в имени
 #
 # Уборка: сессия удаляется ВСЕГДА, когда из вывода удалось достать её ID —
 # в том числе при ошибке API ("upgrade required"), таймауте и т.п.,
