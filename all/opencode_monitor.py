@@ -2,8 +2,8 @@
 """Мониторинг таблиц OpenCode Go (лимиты запросов) и Zen (цены за 1M токенов, устаревание).
 
 Скрипт периодически (cron) проверяет:
-https://opencode.ai/docs/go/
-https://opencode.ai/docs/zen/
+https://opencode.ai/docs/en/go/
+https://opencode.ai/docs/en/zen/
 хранит снапшот в state.json и при изменениях
 (появление/пропажа моделей, смена Free → платная, изменение цен, устаревание)
 шлёт уведомление в Telegram.
@@ -47,8 +47,8 @@ HTTP_TIMEOUT = 30
 DEFAULT_UA = "Mozilla/5.0 (X11; Linux x86_64) opencode-price-monitor/1.0"
 
 PAGES = {
-    "Go": "https://opencode.ai/docs/go/",
-    "Zen": "https://opencode.ai/docs/zen/",
+    "Go": "https://opencode.ai/docs/en/go/",
+    "Zen": "https://opencode.ai/docs/en/zen/",
 }
 
 GO_HEADERS = {"Model", "requests per 5 hour"}

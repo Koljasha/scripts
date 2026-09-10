@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Отчёт по OpenCode: таблица цен Zen и единая таблица лимитов/цен Go.
 
-Источники: https://opencode.ai/docs/zen/ , https://opencode.ai/docs/go/
+Источники: https://opencode.ai/docs/en/zen/ , https://opencode.ai/docs/en/go/
 """
 
 import re
@@ -11,17 +11,18 @@ import decimal
 from html.parser import HTMLParser
 from urllib.request import Request, urlopen
 
-URL_GO = "https://opencode.ai/docs/go/"
-URL_ZEN = "https://opencode.ai/docs/zen/"
-ANCHOR_GO_REQUESTS = (
-    "The table below provides an estimated request count "
-    "based on typical Go usage patterns:"
-)
-ANCHOR_GO_PRICING = (
-    "The estimates are also based on the following prices per 1M tokens "
-    "and the monthly usage included with each model:"
-)
-ANCHOR_ZEN_PRICING = "We support a pay-as-you-go model. Below are the prices"
+URL_GO = "https://opencode.ai/docs/en/go/"
+URL_ZEN = "https://opencode.ai/docs/en/zen/"
+
+# Таблицы ищутся по шапке: берётся первая таблица, чьи колонки включают весь набор.
+GO_REQUESTS_HEADERS = {
+    "Model",
+    "requests per 5 hour",
+    "requests per week",
+    "requests per month",
+}
+GO_PRICING_HEADERS = {"Model", "Input", "Output", "Cached Read", "Cached Write"}
+ZEN_PRICING_HEADERS = {"Model", "Input", "Output", "Cached Read", "Cached Write"}
 UA = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -73,27 +74,26 @@ class PageFetcher:
 
 
 class PageParser:
-    """Находит в HTML-странице таблицы, расположенные после фраз-маркеров."""
+    """Находит в HTML-странице таблицы по составу колонок шапки."""
 
     def __init__(self, page: str):
         self._page = page
 
-    def find_table_after(self, anchor: str) -> list[list[str]]:
-        """Возвращает строки первой таблицы, идущей после заданной фразы."""
-        pos = self._page.find(anchor)
-        if pos == -1:
-            raise RuntimeError(f"Не найдена фраза-маркер: {anchor!r}")
-        start = self._page.find("<table", pos)
-        if start == -1:
-            raise RuntimeError(f"Не найдена таблица после маркера: {anchor!r}")
-        end = self._page.find("</table>", start)
-        if end == -1:
-            raise RuntimeError(f"Не найден конец таблицы после маркера: {anchor!r}")
-        parser = HtmlTableParser()
-        parser.feed(self._page[start : end + len("</table>")])
-        if not parser.rows:
-            raise RuntimeError(f"Таблица после маркера пуста: {anchor!r}")
-        return parser.rows
+    def find_table(self, expected: set[str]) -> list[list[str]]:
+        """Возвращает строки первой таблицы, чья шапка включает все колонки expected.
+
+        Ожидаемые колонки — подмножество реальной шапки, поэтому дополнительные
+        колонки (например, "Monthly limit") поиску не мешают.
+        """
+        for match in re.finditer(r"<table.*?</table>", self._page, re.DOTALL):
+            parser = HtmlTableParser()
+            parser.feed(match.group(0))
+            if parser.rows and expected <= set(parser.rows[0]):
+                return parser.rows
+        raise RuntimeError(
+            f"Не найдена таблица с колонками {sorted(expected)}"
+            " — структура страницы изменилась"
+        )
 
 
 class ModelNameMapper:
@@ -171,6 +171,7 @@ class GoLimits:
     ):
         self.requests_header = requests_table[0]
         self.pricing_header = pricing_table[0]
+        self._output_idx = self.pricing_header.index("Output")
         self._requests = requests_table[1:]
         self._pricing = pricing_table[1:]
         self._descending = descending
@@ -183,10 +184,9 @@ class GoLimits:
                 f"Не удалось прочитать количество запросов в месяц в строке: {row!r}"
             )
 
-    @staticmethod
-    def _price_value(row: list[str]) -> decimal.Decimal:
+    def _price_value(self, row: list[str]) -> decimal.Decimal:
         """Числовое значение цены из колонки Output строки таблицы цен."""
-        raw = re.sub(r"[^\d.]", "", row[2])
+        raw = re.sub(r"[^\d.]", "", row[self._output_idx])
         try:
             return decimal.Decimal(raw)
         except decimal.InvalidOperation:
@@ -253,10 +253,10 @@ class ZenPricing:
     def __init__(self, pricing_table: list[list[str]]):
         self.header = pricing_table[0]
         self._rows = pricing_table[1:]
+        self._input_idx = self.header.index("Input")
 
-    @staticmethod
-    def _is_free(row: list[str]) -> bool:
-        return row[1].strip().lower() == "free"
+    def _is_free(self, row: list[str]) -> bool:
+        return row[self._input_idx].strip().lower() == "free"
 
     def sorted_rows(self) -> list[list[str]]:
         """Free-модели сверху, затем остальные; внутри групп — по имени модели."""
@@ -278,10 +278,10 @@ class OpenCodeReport:
     def __init__(self, go_page: str, zen_page: str):
         go_parser = PageParser(go_page)
         zen_parser = PageParser(zen_page)
-        requests_table = go_parser.find_table_after(ANCHOR_GO_REQUESTS)
-        pricing_table = go_parser.find_table_after(ANCHOR_GO_PRICING)
+        requests_table = go_parser.find_table(GO_REQUESTS_HEADERS)
+        pricing_table = go_parser.find_table(GO_PRICING_HEADERS)
         self._limits = GoLimits(requests_table, pricing_table, GO_SORT_DESCENDING)
-        self._zen = ZenPricing(zen_parser.find_table_after(ANCHOR_ZEN_PRICING))
+        self._zen = ZenPricing(zen_parser.find_table(ZEN_PRICING_HEADERS))
 
     def _separators(self) -> list[str]:
         header = self._limits.combined_header()
