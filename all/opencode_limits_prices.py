@@ -32,30 +32,69 @@ UA = {
 
 GO_SORT_DESCENDING = True  # запросы Go: True — от большего к меньшему, False — наоборот
 
+# Теги зачёркнутого текста (старое значение) и мелкого шрифта (примечание).
+STRIKE_TAGS = frozenset({"del", "s", "strike"})
+SMALL_TAGS = frozenset({"small"})
+
 
 class HtmlTableParser(HTMLParser):
-    """Парсит фрагмент HTML, содержащий одну таблицу, в список строк."""
+    """Парсит фрагмент HTML, содержащий одну таблицу, в список строк.
+
+    Зачёркнутый текст (<del>, <s>, <strike>) — устаревшее значение, в ячейку
+    не попадает. Мелкий шрифт (<small>) — примечание, выводится в скобках
+    после основного текста, например "$60 (4x · Ends Sep 20)".
+    """
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.rows: list[list[str]] = []
         self._row: list[str] | None = None
-        self._cell: list[str] | None = None
+        self._cell: bool = False
+        self._cell_text: list[str] = []
+        self._cell_note: list[str] = []
+        self._strike_depth = 0
+        self._small_depth = 0
 
     def handle_starttag(self, tag, attrs):
         if tag == "tr":
             self._row = []
         elif tag in ("td", "th") and self._row is not None:
-            self._cell = []
+            self._cell = True
+            self._cell_text = []
+            self._cell_note = []
+            self._strike_depth = 0
+            self._small_depth = 0
+        elif tag in STRIKE_TAGS:
+            self._strike_depth += 1
+        elif tag in SMALL_TAGS:
+            self._small_depth += 1
+        elif tag == "br" and self._cell:
+            self._append(" ")
 
     def handle_data(self, data):
-        if self._cell is not None:
-            self._cell.append(data)
+        if self._cell:
+            self._append(data)
+
+    def _append(self, data: str) -> None:
+        if self._strike_depth:
+            return
+        if self._small_depth:
+            self._cell_note.append(data)
+        else:
+            self._cell_text.append(data)
 
     def handle_endtag(self, tag):
-        if tag in ("td", "th") and self._cell is not None and self._row is not None:
-            self._row.append(html.unescape(" ".join("".join(self._cell).split())))
-            self._cell = None
+        if tag in STRIKE_TAGS:
+            self._strike_depth = max(0, self._strike_depth - 1)
+        elif tag in SMALL_TAGS:
+            self._small_depth = max(0, self._small_depth - 1)
+        elif tag in ("td", "th") and self._cell and self._row is not None:
+            text = " ".join(" ".join(self._cell_text).split())
+            note = " ".join(" ".join(self._cell_note).split())
+            if note:
+                text = f"{text} ({note})".strip()
+            self._row.append(html.unescape(text))
+            self._cell = False
         elif tag == "tr" and self._row is not None:
             self.rows.append(self._row)
             self._row = None
