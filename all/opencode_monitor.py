@@ -59,7 +59,7 @@ DEPRECATED_HEADERS = {"Model", "Deprecation date"}
 
 # Порядок источников в уведомлении и их подписи.
 SOURCE_ORDER = ("Go", "GoPrices", "Zen")
-SOURCE_NAMES = {"Go": "Go", "GoPrices": "Go (цены)", "Zen": "Zen"}
+SOURCE_NAMES = {"Go": "Go (запросы)", "GoPrices": "Go (цены)", "Zen": "Zen"}
 
 FIELD_LABELS = {
     "Go": {"за 5 часов": "за 5 часов", "в неделю": "в неделю", "в месяц": "в месяц"},
