@@ -6,7 +6,6 @@
 
 import re
 import sys
-import html
 import decimal
 from html.parser import HTMLParser
 from urllib.request import Request, urlopen
@@ -55,7 +54,7 @@ class HtmlTableParser(HTMLParser):
         self._strike_depth = 0
         self._small_depth = 0
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
         if tag == "tr":
             self._row = []
         elif tag in ("td", "th") and self._row is not None:
@@ -71,7 +70,7 @@ class HtmlTableParser(HTMLParser):
         elif tag == "br" and self._cell:
             self._append(" ")
 
-    def handle_data(self, data):
+    def handle_data(self, data: str):
         if self._cell:
             self._append(data)
 
@@ -83,7 +82,7 @@ class HtmlTableParser(HTMLParser):
         else:
             self._cell_text.append(data)
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str):
         if tag in STRIKE_TAGS:
             self._strike_depth = max(0, self._strike_depth - 1)
         elif tag in SMALL_TAGS:
@@ -93,7 +92,7 @@ class HtmlTableParser(HTMLParser):
             note = " ".join(" ".join(self._cell_note).split())
             if note:
                 text = f"{text} ({note})".strip()
-            self._row.append(html.unescape(text))
+            self._row.append(text)
             self._cell = False
         elif tag == "tr" and self._row is not None:
             self.rows.append(self._row)
@@ -115,8 +114,35 @@ class PageFetcher:
 class PageParser:
     """Находит в HTML-странице таблицы по составу колонок шапки."""
 
+    _TABLE_TAG = re.compile(r"<(/?)table\b[^>]*>", re.IGNORECASE)
+
     def __init__(self, page: str):
         self._page = page
+
+    def _iter_tables(self, page: str):
+        """Отдаёт сбалансированные таблицы верхнего уровня из HTML-страницы.
+
+        Глубина тегов <table>/</table> отслеживается, поэтому фрагмент не
+        обрывается на </table>, встретившемся внутри ячейки. Вложенные таблицы
+        не поддерживаются: попытка сообщить о них вызывающим кодом приводит к
+        RuntimeError вместо тихой неверной нарезки.
+        """
+        depth = 0
+        start = -1
+        for match in self._TABLE_TAG.finditer(page):
+            if not match.group(1):
+                if depth == 0:
+                    start = match.start()
+                else:
+                    raise RuntimeError(
+                        "Вложенная таблица <table> не поддерживается"
+                        " — структура страницы изменилась"
+                    )
+                depth += 1
+            elif depth:
+                depth -= 1
+                if depth == 0:
+                    yield page[start : match.end()]
 
     def find_table(self, expected: set[str]) -> list[list[str]]:
         """Возвращает строки первой таблицы, чья шапка включает все колонки expected.
@@ -124,9 +150,9 @@ class PageParser:
         Ожидаемые колонки — подмножество реальной шапки, поэтому дополнительные
         колонки (например, "Monthly limit") поиску не мешают.
         """
-        for match in re.finditer(r"<table.*?</table>", self._page, re.DOTALL):
+        for fragment in self._iter_tables(self._page):
             parser = HtmlTableParser()
-            parser.feed(match.group(0))
+            parser.feed(fragment)
             if parser.rows and expected <= set(parser.rows[0]):
                 return parser.rows
         raise RuntimeError(
@@ -159,11 +185,20 @@ class ModelNameMapper:
 class NumberFormatter:
     """Форматирует строки чисел с разделителем тысяч."""
 
+    _PLAIN_INT = re.compile(r"^\s*(?:\d+|\d{1,3}(?:[ \u2009\u00a0,]\d{3})+)\s*$")
+
     @staticmethod
     def with_thousands(value: str) -> str:
-        digits = re.sub(r"[^\d]", "", value)
-        if not digits:
+        """Форматирует число, только если вся ячейка — целое число.
+
+        Разделители тысяч (запятая, пробел, узкий/неразрывный пробел) и
+        окружающие пробелы допускаются. Если в ячейке есть текст примечания
+        (например, "26,000 (4x · Ends Sep 20)"), значение возвращается без
+        изменений, чтобы не собрать число из посторонних цифр.
+        """
+        if not NumberFormatter._PLAIN_INT.match(value):
             return value
+        digits = re.sub(r"[^\d]", "", value)
         return f"{int(digits):,}".replace(",", "\u2009")
 
 
@@ -180,6 +215,13 @@ class TableRenderer:
         header: list[str], rows: list[list[str]], separators: list[str] | None = None
     ) -> str:
         n = len(header)
+        for index, row in enumerate([header, *rows]):
+            if len(row) != n:
+                role = "шапка" if index == 0 else f"строка #{index}"
+                raise RuntimeError(
+                    f"{role} таблицы содержит {len(row)} колонок,"
+                    f" ожидалось {n}: {row!r}"
+                )
         if separators is None:
             separators = [" | "] * (n - 1)
         table = [header] + rows
@@ -211,23 +253,30 @@ class GoLimits:
         self.requests_header = requests_table[0]
         self.pricing_header = pricing_table[0]
         self._output_idx = self.pricing_header.index("Output")
+        self._month_idx = self.requests_header.index("requests per month")
         self._requests = requests_table[1:]
         self._pricing = pricing_table[1:]
         self._descending = descending
 
     def _month_value(self, row: list[str]) -> int:
         try:
-            return int(re.sub(r"[^\d]", "", row[-1]))
+            return int(re.sub(r"[^\d]", "", row[self._month_idx]))
         except (IndexError, ValueError):
             raise RuntimeError(
                 f"Не удалось прочитать количество запросов в месяц в строке: {row!r}"
             )
 
     def _price_value(self, row: list[str]) -> decimal.Decimal:
-        """Числовое значение цены из колонки Output строки таблицы цен."""
-        raw = re.sub(r"[^\d.]", "", row[self._output_idx])
+        """Числовое значение цены из колонки Output строки таблицы цен.
+
+        Берётся первое числовое слово ячейки (регулярное выражение
+        "\\d[\\d.]*"), поэтому примечание вроде "$0.60 (x2)" не искажает цену.
+        """
+        match = re.search(r"\d[\d.]*", row[self._output_idx])
+        if match is None:
+            raise RuntimeError(f"Не удалось прочитать цену Output в строке: {row!r}")
         try:
-            return decimal.Decimal(raw)
+            return decimal.Decimal(match.group(0))
         except decimal.InvalidOperation:
             raise RuntimeError(f"Не удалось прочитать цену Output в строке: {row!r}")
 
@@ -254,6 +303,18 @@ class GoLimits:
         Модель без строк цен получает "-" в колонках цен; строка цен без
         соответствия в запросах выводится в конце с "-" в колонках запросов.
         """
+        counts: dict[str, int] = {}
+        for row in self._requests:
+            key = ModelNameMapper.normalize(row[0])
+            counts[key] = counts.get(key, 0) + 1
+        duplicates = sorted(key for key, count in counts.items() if count > 1)
+        if duplicates:
+            raise RuntimeError(
+                "В таблице запросов несколько моделей совпадают после"
+                f" нормализации ({', '.join(duplicates)}) — сопоставление"
+                " с ценами неоднозначно, структура страницы изменилась"
+            )
+
         grouped: dict[str, list[list[str]]] = {}
         for row in self._pricing:
             grouped.setdefault(ModelNameMapper.normalize(row[0]), []).append(row)

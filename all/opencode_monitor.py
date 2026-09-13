@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Мониторинг таблиц OpenCode Go (лимиты запросов) и Zen (цены за 1M токенов, устаревание).
+"""Мониторинг таблиц OpenCode Go (лимиты запросов и цены) и Zen (цены, устаревание).
 
 Скрипт периодически (cron) проверяет:
 https://opencode.ai/docs/en/go/
 https://opencode.ai/docs/en/zen/
 хранит снапшот в state.json и при изменениях
-(появление/пропажа моделей, смена Free → платная, изменение цен, устаревание)
-шлёт уведомление в Telegram.
+(появление/пропажа моделей, смена Free → платная, изменение лимитов, цен,
+месячного лимита, устаревание) шлёт уведомление в Telegram.
 
 Зависимости: pip install requests beautifulsoup4
 
@@ -34,6 +34,7 @@ from typing import NotRequired, TypedDict
 
 import requests
 from bs4 import BeautifulSoup, Tag
+from bs4.element import Comment
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
@@ -52,11 +53,23 @@ PAGES = {
 }
 
 GO_HEADERS = {"Model", "requests per 5 hour"}
+GO_PRICE_HEADERS = {"Model", "Cached Read", "Monthly limit"}
 ZEN_HEADERS = {"Model", "Cached Read"}
 DEPRECATED_HEADERS = {"Model", "Deprecation date"}
 
+# Порядок источников в уведомлении и их подписи.
+SOURCE_ORDER = ("Go", "GoPrices", "Zen")
+SOURCE_NAMES = {"Go": "Go", "GoPrices": "Go (цены)", "Zen": "Zen"}
+
 FIELD_LABELS = {
     "Go": {"за 5 часов": "за 5 часов", "в неделю": "в неделю", "в месяц": "в месяц"},
+    "GoPrices": {
+        "вход": "Вход",
+        "выход": "Выход",
+        "cached_read": "Cached Read",
+        "cached_write": "Cached Write",
+        "monthly_limit": "Monthly limit",
+    },
     "Zen": {
         "вход": "Вход",
         "выход": "Выход",
@@ -67,18 +80,19 @@ FIELD_LABELS = {
 
 ModelTable = dict[str, dict[str, str]]
 TariffEvent = tuple[str, str, str]
-PriceChange = tuple[str, list[tuple[str, str, str]]]
+PriceChange = tuple[str, list[tuple[str, str | None, str | None]]]
+DeprecatedEvent = tuple[str, str | None, str | None]
 
 
 class SourceData(TypedDict):
     models: ModelTable
-    deprecated: NotRequired[dict[str, str]]
+    deprecated: NotRequired[dict[str, str] | None]
 
 
 class SourceSnapshot(TypedDict):
     fetched_at: str
     models: ModelTable
-    deprecated: NotRequired[dict[str, str]]
+    deprecated: NotRequired[dict[str, str] | None]
 
 
 class SourceDiff(TypedDict):
@@ -86,7 +100,7 @@ class SourceDiff(TypedDict):
     added: list[str]
     tariff: list[TariffEvent]
     prices: list[PriceChange]
-    deprecated: list[tuple[str, str, str | None]]
+    deprecated: list[DeprecatedEvent]
 
 
 logger = logging.getLogger("opencode_monitor")
@@ -107,7 +121,9 @@ def load_env() -> dict[str, str]:
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
+            line = re.sub(r"^export\s+", "", line)
             key, _, value = line.partition("=")
+            value = re.sub(r"\s+#.*$", "", value)
             cfg[key.strip()] = value.strip().strip('"').strip("'")
     return cfg
 
@@ -177,13 +193,43 @@ def fetch_html(url: str, timeout: int) -> str:
             logger.warning(
                 "Сеть: попытка %d/3 для %s не удалась: %s", attempt + 1, url, err
             )
-            time.sleep(2**attempt)
+            if attempt < 2:
+                time.sleep(2**attempt)
     raise RuntimeError(f"Не удалось получить {url}: {last_err}")
 
 
 def _normalize(value: str) -> str:
     """Схлопывает подряд идущие пробелы и обрезает строку."""
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _cell_text(cell: Tag) -> str:
+    """Текст ячейки без устаревших и служебных вставок.
+
+    Зачёркнутый текст (<del>, <s>, <strike>) — старое значение, отбрасывается;
+    мелкий шрифт (<small>) — примечание к акции, тоже не входит в значение,
+    чтобы имя модели и лимиты оставались стабильными. Без этого новая разметка
+    акции (<del>6,500</del><br><strong>26,000</strong>) склеивалась бы в
+    "6,500 26,000", а имя модели — в "... Flash 4x · Ends Sep 20".
+    """
+    chunks: list[str] = []
+
+    def walk(node: Tag) -> None:
+        for child in node.children:
+            if isinstance(child, Comment):
+                continue
+            if isinstance(child, Tag):
+                if child.name in ("del", "s", "strike", "small"):
+                    continue
+                if child.name == "br":
+                    chunks.append(" ")
+                else:
+                    walk(child)
+            else:
+                chunks.append(str(child))
+
+    walk(cell)
+    return _normalize("".join(chunks))
 
 
 def _find_table(soup: BeautifulSoup, expected_headers: set[str]) -> Tag | None:
@@ -200,10 +246,7 @@ def _find_table(soup: BeautifulSoup, expected_headers: set[str]) -> Tag | None:
         header_row = table.find("tr")
         if header_row is None:
             continue
-        cells = [
-            _normalize(c.get_text(" ", strip=True))
-            for c in header_row.find_all(["th", "td"])
-        ]
+        cells = [_cell_text(c) for c in header_row.find_all(["th", "td"])]
         if set(expected_headers) <= set(cells):
             return table
     return None
@@ -216,9 +259,7 @@ def _table_rows(table: Tag) -> list[list[str]]:
     """
     rows = []
     for tr in table.find_all("tr")[1:]:
-        cells = [
-            _normalize(c.get_text(" ", strip=True)) for c in tr.find_all(["td", "th"])
-        ]
+        cells = [_cell_text(c) for c in tr.find_all(["td", "th"])]
         if cells and any(cells):
             rows.append(cells)
     return rows
@@ -227,10 +268,34 @@ def _table_rows(table: Tag) -> list[list[str]]:
 def _header_indexes(table: Tag) -> list[str]:
     """Возвращает имена колонок таблицы (заголовок)."""
     header_row = table.find("tr")
-    return [
-        _normalize(c.get_text(" ", strip=True))
-        for c in header_row.find_all(["th", "td"])
-    ]
+    if header_row is None:
+        return []
+    return [_cell_text(c) for c in header_row.find_all(["th", "td"])]
+
+
+def _column_indexes(headers: list[str], names: tuple[str, ...]) -> dict[str, int]:
+    """Возвращает индексы ожидаемых колонок по именам заголовков.
+
+    Args:
+        headers: фактические имена колонок таблицы.
+        names: ожидаемые имена колонок.
+
+    Returns:
+        Словарь {имя колонки: индекс}.
+
+    Raises:
+        RuntimeError: если ожидаемая колонка отсутствует (структура
+            страницы изменилась).
+    """
+    indexes: dict[str, int] = {}
+    for name in names:
+        if name not in headers:
+            raise RuntimeError(
+                f"Не найдена колонка «{name}» (заголовки: {headers}) — "
+                "структура страницы изменилась"
+            )
+        indexes[name] = headers.index(name)
+    return indexes
 
 
 def parse_go(soup: BeautifulSoup) -> ModelTable:
@@ -246,15 +311,15 @@ def parse_go(soup: BeautifulSoup) -> ModelTable:
     if table is None:
         raise RuntimeError("Не найдена таблица запросов Go на странице")
     headers = _header_indexes(table)
-    idx = {
-        name: headers.index(name)
-        for name in (
+    idx = _column_indexes(
+        headers,
+        (
             "Model",
             "requests per 5 hour",
             "requests per week",
             "requests per month",
-        )
-    }
+        ),
+    )
     models = {}
     for cells in _table_rows(table):
         if len(cells) <= max(idx.values()):
@@ -271,12 +336,55 @@ def parse_go(soup: BeautifulSoup) -> ModelTable:
     return models
 
 
-def parse_zen(soup: BeautifulSoup) -> tuple[ModelTable, dict[str, str]]:
+def parse_go_pricing(soup: BeautifulSoup) -> ModelTable:
+    """Парсит таблицу цен Go (за 1M токенов и месяцной лимит).
+
+    Returns:
+        Словарь {модель: {вход, выход, cached_read, cached_write, monthly_limit}}.
+
+    Raises:
+        RuntimeError: таблица не найдена или пуста (структура страницы изменилась).
+    """
+    table = _find_table(soup, GO_PRICE_HEADERS)
+    if table is None:
+        raise RuntimeError("Не найдена таблица цен Go на странице")
+    headers = _header_indexes(table)
+    idx = _column_indexes(
+        headers,
+        (
+            "Model",
+            "Input",
+            "Output",
+            "Cached Read",
+            "Cached Write",
+            "Monthly limit",
+        ),
+    )
+    models = {}
+    for cells in _table_rows(table):
+        if len(cells) <= max(idx.values()):
+            continue
+        models[cells[idx["Model"]]] = {
+            "вход": cells[idx["Input"]],
+            "выход": cells[idx["Output"]],
+            "cached_read": cells[idx["Cached Read"]],
+            "cached_write": cells[idx["Cached Write"]],
+            "monthly_limit": cells[idx["Monthly limit"]],
+        }
+    if not models:
+        raise RuntimeError(
+            "Таблица цен Go пуста — возможно, изменилась структура страницы"
+        )
+    return models
+
+
+def parse_zen(soup: BeautifulSoup) -> tuple[ModelTable, dict[str, str] | None]:
     """Парсит таблицу цен Zen и таблицу устаревания.
 
     Returns:
         Кортеж (модели, deprecated): модели — {модель: {вход, выход, cached_read,
-        cached_write}}, deprecated — {модель: дата устаревания}.
+        cached_write}}, deprecated — {модель: дата устаревания} либо None, если
+        таблица устаревания отсутствует на странице.
 
     Raises:
         RuntimeError: таблица цен не найдена или пуста.
@@ -285,10 +393,9 @@ def parse_zen(soup: BeautifulSoup) -> tuple[ModelTable, dict[str, str]]:
     if table is None:
         raise RuntimeError("Не найдена таблица цен Zen на странице")
     headers = _header_indexes(table)
-    idx = {
-        name: headers.index(name)
-        for name in ("Model", "Input", "Output", "Cached Read", "Cached Write")
-    }
+    idx = _column_indexes(
+        headers, ("Model", "Input", "Output", "Cached Read", "Cached Write")
+    )
     models = {}
     for cells in _table_rows(table):
         if len(cells) <= max(idx.values()):
@@ -304,13 +411,12 @@ def parse_zen(soup: BeautifulSoup) -> tuple[ModelTable, dict[str, str]]:
             "Таблица цен Zen пуста — возможно, изменилась структура страницы"
         )
 
-    deprecated = {}
+    deprecated: dict[str, str] | None = None
     dtable = _find_table(soup, DEPRECATED_HEADERS)
-    if dtable is None:
-        logger.warning("Zen: таблица устаревания не найдена — страница изменилась?")
-    else:
+    if dtable is not None:
+        deprecated = {}
         dheaders = _header_indexes(dtable)
-        didx = {name: dheaders.index(name) for name in ("Model", "Deprecation date")}
+        didx = _column_indexes(dheaders, ("Model", "Deprecation date"))
         for cells in _table_rows(dtable):
             if len(cells) <= max(didx.values()):
                 continue
@@ -319,13 +425,19 @@ def parse_zen(soup: BeautifulSoup) -> tuple[ModelTable, dict[str, str]]:
 
 
 def diff_models(
-    prev: ModelTable, curr: ModelTable
+    prev: ModelTable, curr: ModelTable, free_tariff: bool = False
 ) -> tuple[list[str], list[str], list[TariffEvent], list[PriceChange]]:
     """Сравнивает два снапшота моделей.
 
     Пара «X Free» и «X» распознаётся как смена тарифа (одно событие), а не как
     пропажа и появление. Дубли имён (варианты лимитов токенов, например
     «Claude Sonnet 4.5 (≤ 200K tokens)» и «(> 200K tokens)») — отдельные модели.
+
+    Args:
+        prev: прежний снапшот моделей.
+        curr: текущий снапшот моделей.
+        free_tariff: распознавать ли смену тарифа «Free» (имеет смысл только
+            для Zen).
 
     Returns:
         Кортеж (пропали, появились, смены тарифа, изменения цен).
@@ -335,40 +447,41 @@ def diff_models(
     added = curr_keys - prev_keys
     tariff = []
 
-    for name in list(removed):
-        if name.endswith(" Free"):
-            base = name[: -len(" Free")]
-            if base in added:
-                tariff.append((name, base, "платной"))
-                removed.discard(name)
-                added.discard(base)
+    if free_tariff:
+        for name in list(removed):
+            if name.endswith(" Free"):
+                base = name[: -len(" Free")]
+                if base in added:
+                    tariff.append((name, base, "платной"))
+                    removed.discard(name)
+                    added.discard(base)
 
-    for name in list(added):
-        if name.endswith(" Free"):
-            base = name[: -len(" Free")]
-            if base in removed:
-                tariff.append((base, name, "бесплатной"))
-                added.discard(name)
-                removed.discard(base)
+        for name in list(added):
+            if name.endswith(" Free"):
+                base = name[: -len(" Free")]
+                if base in removed:
+                    tariff.append((base, name, "бесплатной"))
+                    added.discard(name)
+                    removed.discard(base)
 
     price_changes = []
     for name in prev_keys & curr_keys:
         if prev[name] != curr[name]:
             fields = [
                 (k, prev[name].get(k), curr[name].get(k))
-                for k in curr[name]
+                for k in set(prev[name]) | set(curr[name])
                 if prev[name].get(k) != curr[name].get(k)
             ]
             price_changes.append((name, fields))
 
-    return sorted(removed), sorted(added), tariff, price_changes
+    return sorted(removed), sorted(added), sorted(tariff), price_changes
 
 
 def build_message(changes: dict[str, SourceDiff], now_str: str) -> str:
     """Собирает текст уведомления для Telegram.
 
     Args:
-        changes: обнаруженные изменения по источникам Go/Zen.
+        changes: обнаруженные изменения по источникам Go/GoPrices/Zen.
         now_str: дата и время в человекочитаемом формате.
 
     Returns:
@@ -376,22 +489,35 @@ def build_message(changes: dict[str, SourceDiff], now_str: str) -> str:
     """
     out = [f"📡 OpenCode-монитор — изменения ({now_str})", ""]
 
-    removed = [f"{s}: {n}" for s in ("Go", "Zen") for n in changes[s]["removed"]]
-    added = [f"{s}: {n}" for s in ("Go", "Zen") for n in changes[s]["added"]]
+    order = [s for s in SOURCE_ORDER if s in changes]
+    removed = [f"{SOURCE_NAMES[s]}: {n}" for s in order for n in changes[s]["removed"]]
+    added = [f"{SOURCE_NAMES[s]}: {n}" for s in order for n in changes[s]["added"]]
     tariff = [
-        f"{s}: {old} → {new} (стала {label})"
-        for s in ("Go", "Zen")
+        f"{SOURCE_NAMES[s]}: {old} → {new} (стала {label})"
+        for s in order
         for (old, new, label) in changes[s]["tariff"]
     ]
     prices = []
-    for s in ("Go", "Zen"):
+    for s in order:
         for name, fields in changes[s]["prices"]:
-            bits = [f"{FIELD_LABELS[s][k]}: {old} → {new}" for k, old, new in fields]
-            prices.append(f"{s}: {name} — {', '.join(bits)}")
+            bits = [
+                f"{FIELD_LABELS[s][k]}: "
+                f"{old if old is not None else '(нет)'} → "
+                f"{new if new is not None else '(нет)'}"
+                for k, old, new in fields
+            ]
+            prices.append(f"{SOURCE_NAMES[s]}: {name} — {', '.join(bits)}")
     dep_events = []
-    for name, new_date, old_date in changes["Zen"]["deprecated"]:
-        tail = f"{new_date}" if old_date is None else f"{new_date} (было: {old_date})"
-        dep_events.append(f"Zen: {name} — дата устаревания {tail}")
+    for name, new_date, old_date in changes.get("Zen", {}).get("deprecated", []):
+        if new_date is None:
+            dep_events.append(
+                f"Zen: {name} — исключена из списка устаревания (было: {old_date})"
+            )
+        else:
+            tail = (
+                f"{new_date}" if old_date is None else f"{new_date} (было: {old_date})"
+            )
+            dep_events.append(f"Zen: {name} — дата устаревания {tail}")
 
     def add(title: str, items: list[str]) -> None:
         """Добавляет секцию с заголовком и строками, если строки есть."""
@@ -433,7 +559,46 @@ def send_tg(cfg: dict[str, str], text: str) -> None:
         resp.raise_for_status()
         logger.info("TG: уведомление отправлено (%d символов)", len(text))
     except requests.RequestException as err:
-        logger.error("TG: не удалось отправить уведомление: %s", err)
+        safe_msg = str(err).replace(token, "<TG_TOKEN>")
+        logger.error(
+            "TG: не удалось отправить уведомление (%s): %s",
+            type(err).__name__,
+            safe_msg,
+        )
+
+
+def _state_shape_error(data: dict) -> str | None:
+    """Проверяет форму снапшота state.json.
+
+    Каждый источник должен быть объектом; его «models» (если есть) — объектом;
+    его «deprecated» (если есть) — объектом либо null, а значения deprecated —
+    строками.
+
+    Returns:
+        Описание первой найденной проблемы или None, если структура корректна.
+    """
+    for source, value in data.items():
+        if not isinstance(value, dict):
+            return f"источник {source!r} не является объектом ({type(value).__name__})"
+        if "models" in value and not isinstance(value["models"], dict):
+            return (
+                f"models источника {source!r} не является объектом "
+                f"({type(value['models']).__name__})"
+            )
+        if "deprecated" in value and value["deprecated"] is not None:
+            deprecated = value["deprecated"]
+            if not isinstance(deprecated, dict):
+                return (
+                    f"deprecated источника {source!r} не является объектом "
+                    f"({type(deprecated).__name__})"
+                )
+            for name, date in deprecated.items():
+                if not isinstance(name, str) or not isinstance(date, str):
+                    return (
+                        f"deprecated источника {source!r} содержит нестроковое "
+                        f"значение для {name!r}"
+                    )
+    return None
 
 
 def load_state() -> dict[str, SourceSnapshot] | None:
@@ -447,16 +612,46 @@ def load_state() -> dict[str, SourceSnapshot] | None:
         return None
     try:
         with open(STATE_PATH, encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
     except (json.JSONDecodeError, OSError) as err:
         logger.error("state.json повреждён (%s) — будет повторная инициализация", err)
         return None
+    if not isinstance(data, dict):
+        logger.error(
+            "state.json имеет неверную структуру (%s) — будет повторная инициализация",
+            type(data).__name__,
+        )
+        return None
+    shape_error = _state_shape_error(data)
+    if shape_error is not None:
+        logger.error(
+            "state.json имеет неверную структуру (%s) — будет повторная инициализация",
+            shape_error,
+        )
+        return None
+    return data
 
 
 def save_state(state: dict[str, SourceSnapshot]) -> None:
-    """Записывает снапшот состояния в state.json."""
-    with open(STATE_PATH, "w", encoding="utf-8") as fh:
-        json.dump(state, fh, ensure_ascii=False, indent=2)
+    """Записывает снапшот состояния в state.json (атомарно).
+
+    Данные пишутся во временный файл в том же каталоге и затем атомарно
+    подменяют state.json через os.replace.
+    """
+    tmp_path = os.path.join(
+        BASE_DIR, f".state.{os.getpid()}.{int(time.time() * 1000)}.tmp"
+    )
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, ensure_ascii=False, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, STATE_PATH)
+    except OSError:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
 
 
 def main() -> int:
@@ -476,6 +671,7 @@ def main() -> int:
         soup = BeautifulSoup(html, "html.parser")
         if source == "Go":
             fresh["Go"] = {"models": parse_go(soup)}
+            fresh["GoPrices"] = {"models": parse_go_pricing(soup)}
         else:
             models, deprecated = parse_zen(soup)
             fresh["Zen"] = {"models": models, "deprecated": deprecated}
@@ -491,20 +687,37 @@ def main() -> int:
         }
         save_state(state)
         for s, data in fresh.items():
+            dep = len(data.get("deprecated") or {})
+            suffix = f", {dep} записей устаревания" if dep else ""
             logger.info(
-                "Инициализация %s: %d моделей, %d записей устаревания",
-                s,
-                len(data["models"]),
-                len(data.get("deprecated", {})),
+                "Инициализация %s: %d моделей%s", s, len(data["models"]), suffix
             )
         logger.info("Первый запуск: снапшот сохранён в state.json, изменений нет")
         return 0
 
     changes: dict[str, SourceDiff] = {}
     total = 0
-    for s in ("Go", "Zen"):
-        old = prev.get(s, {}).get("models", {})
-        removed, added, tariff, prices = diff_models(old, fresh[s]["models"])
+    for s in SOURCE_ORDER:
+        if s not in fresh:
+            continue
+        if s not in prev:
+            logger.info(
+                "%s: начинаем отслеживать таблицу (%d записей), событий нет",
+                s,
+                len(fresh[s]["models"]),
+            )
+            changes[s] = {
+                "removed": [],
+                "added": [],
+                "tariff": [],
+                "prices": [],
+                "deprecated": [],
+            }
+            continue
+        old = prev[s].get("models", {})
+        removed, added, tariff, prices = diff_models(
+            old, fresh[s]["models"], free_tariff=(s == "Zen")
+        )
         changes[s] = {
             "removed": removed,
             "added": added,
@@ -524,8 +737,13 @@ def main() -> int:
 
     dep_events = []
     old_dep = prev.get("Zen", {}).get("deprecated")
-    new_dep = fresh["Zen"]["deprecated"]
-    if old_dep is None:
+    new_dep = fresh["Zen"].get("deprecated")
+    if new_dep is None:
+        logger.warning(
+            "Zen: таблица устаревания не найдена — сохраняю прежний список (%d записей)",
+            len(old_dep or {}),
+        )
+    elif old_dep is None:
         logger.info(
             "Zen: начинаем отслеживать таблицу устаревания (%d записей)", len(new_dep)
         )
@@ -546,10 +764,19 @@ def main() -> int:
                     old_dep[name],
                     new_dep[name],
                 )
+        for name in sorted(set(old_dep) - set(new_dep)):
+            dep_events.append((name, None, old_dep[name]))
+            logger.info(
+                "Zen: модель исключена из списка устаревания: %s (было: %s)",
+                name,
+                old_dep[name],
+            )
     changes["Zen"]["deprecated"] = dep_events
     total += len(dep_events)
 
     state = {s: {"fetched_at": now_iso, **fresh[s]} for s in fresh}
+    if fresh["Zen"].get("deprecated") is None:
+        state["Zen"]["deprecated"] = old_dep
     save_state(state)
 
     if total == 0:
