@@ -4,9 +4,9 @@
 Источники: https://opencode.ai/docs/en/zen/ , https://opencode.ai/docs/en/go/
 """
 
+import decimal
 import re
 import sys
-import decimal
 from html.parser import HTMLParser
 from urllib.request import Request, urlopen
 
@@ -156,8 +156,7 @@ class PageParser:
             if parser.rows and expected <= set(parser.rows[0]):
                 return parser.rows
         raise RuntimeError(
-            f"Не найдена таблица с колонками {sorted(expected)}"
-            " — структура страницы изменилась"
+            f"Не найдена таблица с колонками {sorted(expected)} — структура страницы изменилась"
         )
 
 
@@ -219,8 +218,7 @@ class TableRenderer:
             if len(row) != n:
                 role = "шапка" if index == 0 else f"строка #{index}"
                 raise RuntimeError(
-                    f"{role} таблицы содержит {len(row)} колонок,"
-                    f" ожидалось {n}: {row!r}"
+                    f"{role} таблицы содержит {len(row)} колонок, ожидалось {n}: {row!r}"
                 )
         if separators is None:
             separators = [" | "] * (n - 1)
@@ -228,17 +226,11 @@ class TableRenderer:
         widths = [max(len(str(row[i])) for row in table) for i in range(n)]
 
         def join_row(cells: list[str]) -> str:
-            return cells[0] + "".join(
-                sep + cell for sep, cell in zip(separators, cells[1:])
-            )
+            return cells[0] + "".join(sep + cell for sep, cell in zip(separators, cells[1:]))
 
-        padded = [
-            [str(cell).ljust(widths[i]) for i, cell in enumerate(row)] for row in table
-        ]
+        padded = [[str(cell).ljust(widths[i]) for i, cell in enumerate(row)] for row in table]
         sep_line = join_row(["-" * w for w in widths])
-        return "\n".join(
-            [join_row(padded[0]), sep_line, *(join_row(r) for r in padded[1:])]
-        )
+        return "\n".join([join_row(padded[0]), sep_line, *(join_row(r) for r in padded[1:])])
 
 
 class GoLimits:
@@ -258,22 +250,48 @@ class GoLimits:
         self._pricing = pricing_table[1:]
         self._descending = descending
 
-    def _month_value(self, row: list[str]) -> int:
+    _UNLIMITED = re.compile(r"\bunlimited\b", re.IGNORECASE)
+
+    def _month_value(self, row: list[str]) -> tuple[int, int]:
+        """Ключ сортировки по числу запросов в месяц.
+
+        Числовые значения сравниваются по величине. «Unlimited» числа не
+        имеет и трактуется как неограниченное число запросов: при сортировке
+        по убыванию такие модели идут первыми, при возрастании — последними.
+        """
         try:
-            return int(re.sub(r"[^\d]", "", row[self._month_idx]))
-        except (IndexError, ValueError):
+            cell = row[self._month_idx]
+        except IndexError:
             raise RuntimeError(
                 f"Не удалось прочитать количество запросов в месяц в строке: {row!r}"
             )
+        if self._UNLIMITED.search(cell):
+            return (1, 0)
+        digits = re.sub(r"[^\d]", "", cell)
+        if not digits:
+            raise RuntimeError(
+                f"Не удалось прочитать количество запросов в месяц в строке: {row!r}"
+            )
+        return (0, int(digits))
+
+    _FREE = re.compile(r"\bfree\b", re.IGNORECASE)
 
     def _price_value(self, row: list[str]) -> decimal.Decimal:
         """Числовое значение цены из колонки Output строки таблицы цен.
 
         Берётся первое числовое слово ячейки (регулярное выражение
         "\\d[\\d.]*"), поэтому примечание вроде "$0.60 (x2)" не искажает цену.
+        Бесплатная модель («Free», без числа) получает 0 — она дешевле любой
+        платной и в отсортированном списке идёт первой.
         """
-        match = re.search(r"\d[\d.]*", row[self._output_idx])
+        try:
+            cell = row[self._output_idx]
+        except IndexError:
+            raise RuntimeError(f"Не удалось прочитать цену Output в строке: {row!r}")
+        match = re.search(r"\d[\d.]*", cell)
         if match is None:
+            if self._FREE.search(cell):
+                return decimal.Decimal(0)
             raise RuntimeError(f"Не удалось прочитать цену Output в строке: {row!r}")
         try:
             return decimal.Decimal(match.group(0))
@@ -404,7 +422,7 @@ class OpenCodeReport:
         return f"{title}\n{TableRenderer.render(self._zen.header, self._zen.sorted_rows())}"
 
     def render(self) -> str:
-        return "\n\n".join([self._render_zen(), self._render_go()])
+        return f"{self._render_zen()}\n\n{self._render_go()}"
 
 
 def main() -> int:
@@ -414,7 +432,7 @@ def main() -> int:
         zen_page = fetcher.fetch(URL_ZEN)
         print(OpenCodeReport(go_page, zen_page).render())
         return 0
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — CLI-обёртка: сбой сети или разбора → код 1
         print(f"Ошибка: {exc}", file=sys.stderr)
         return 1
 
